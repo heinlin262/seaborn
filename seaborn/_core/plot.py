@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import itertools
 from copy import deepcopy
+from collections import abc
 
 import numpy as np
 import pandas as pd
@@ -40,8 +41,10 @@ class Plot:
     _mappings: dict[str, SemanticMapping]  # TODO keys as Literal, or use TypedDict?
     _scales: dict[str, ScaleBase]
 
-    _figure: Figure
     _facetspec: dict[str, Any]  # TODO any need to be more strict on values?
+    _pairspec: dict[str, Any]
+
+    _figure: Figure
 
     def __init__(
         self,
@@ -69,6 +72,7 @@ class Plot:
         }
 
         self._facetspec = {}
+        self._pairspec = {}
 
     def on(self) -> Plot:
 
@@ -115,9 +119,10 @@ class Plot:
 
     def pair(
         self,
-        x: list[Hashable] | None = None,  # TODO or xs or x_vars
-        y: list[Hashable] | None = None,
-        # TODO paramaeter for "non-product" versions
+        x: Hashable | list[Hashable] | None = None,
+        y: Hashable | list[Hashable] | None = None,
+        cartesian: bool = True,  # TODO bikeshed name
+        # TODO wrapping if only one variable is a list or not cartesian
         # TODO figure parameterization (sharex/sharey, etc.)
         # TODO other existing PairGrid things like corner?
     ) -> Plot:
@@ -142,7 +147,29 @@ class Plot:
         #   and especially the axis scaling, which will need to be pair specific
         # - How to resolve sharex/sharey between facet() and pair()?
 
-        raise NotImplementedError()
+        # TODO raise if pair called without source data? or add data= arg here?
+        # TODO default to columns of source data if x and y are both None
+        # TODO (BUT we want to not use columns assigned to mappings in that case...)
+
+        pairspec = {}
+        axes = {"x": x, "y": y}
+        for axis, arg in axes.items():
+            # TODO more input validation
+            if arg is not None:
+                # TODO we want to also accept Index objects but those are hashable
+                # so we need a smarter approach to allowing a single variable spec
+                # if isinstance(arg, abc.Hashable):
+                #     arg = [arg]
+                pairspec[axis] = list(arg)
+
+        pairspec["variables"] = {}
+        for axis in "xy":
+            for i, col in enumerate(pairspec.get(axis, [])):
+                pairspec["variables"][f"{axis}{i}"] = col
+
+        pairspec["cartesian"] = cartesian
+
+        self._pairspec.update(pairspec)
         return self
 
     def facet(
@@ -345,9 +372,11 @@ class Plot:
                 self._facetspec.get("source", None),
                 self._facetspec.get("variables", None),
             )
+            .concat(
+                self._pairspec.get("source", None),
+                self._pairspec.get("variables", None),
+            )
         )
-
-        # TODO concat with pairing spec
 
         # TODO concat with mapping spec
 
@@ -375,30 +404,39 @@ class Plot:
         # TODO use context manager with theme that has been set
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
-        facet_data = self._data.concat(
+        setup_data = self._data.concat(
             self._facetspec.get("source", None),
             self._facetspec.get("variables", None),
         )
 
-        # TODO I am ignoring pairing for now. It will make things more complicated!
-        # TODO also ignoring col/row wrapping, but we need to deal with that
+        # TODO Validate that we do not have overlapping pair/facet specification
+        # i.e. we cannot pair on x and facet on columns
 
-        facet_orders = {}
+        setup_data = setup_data.concat(None, self._pairspec.get("variables", {}))
+
+        # TODO Ignoring col/row wrapping, but we need to deal with that
+
+        figure_dimensions = {}
         subplot_spec = {}
-        for dim in ["col", "row"]:
-            if dim in facet_data:
-                data = facet_data.frame[dim]
-                facet_orders[dim] = order = categorical_order(
+        for dim, axis in zip(["col", "row"], ["x", "y"]):
+            if dim in setup_data:
+                data = setup_data.frame[dim]
+                figure_dimensions[dim] = categorical_order(
                     data, self._facetspec.get(f"{dim}_order", None),
                 )
-                subplot_spec[f"n{dim}s"] = len(order)
+            elif axis in self._pairspec:
+                # TODO different behavior for cartesian
+                # TODO pass original column names? Or internal variable names?
+                figure_dimensions[dim] = self._pairspec[axis]
             else:
-                facet_orders[dim] = [None]
-                subplot_spec[f"n{dim}s"] = 1
+                figure_dimensions[dim] = [None]
+            subplot_spec[f"n{dim}s"] = len(figure_dimensions[dim])
 
-        for axis in "xy":
             # TODO Defaults for sharex/y should be defined in one place
-            subplot_spec[f"share{axis}"] = self._facetspec.get(f"share{axis}", True)
+            if axis in self._pairspec:
+                subplot_spec[f"share{axis}"] = dim  # TODO allows unshared pair axes
+            else:
+                subplot_spec[f"share{axis}"] = self._facetspec.get(f"share{axis}", True)
 
         figsize = getattr(self, "_figsize", None)
 
@@ -414,16 +452,22 @@ class Plot:
 
             self._subplot_list.append({
                 "axes": axes,
-                "row": facet_orders["row"][i],
-                "col": facet_orders["col"][j],
+                "row": figure_dimensions["row"][i],
+                "col": figure_dimensions["col"][j],
             })
 
             for axis in "xy":
+                idx = {"x": j, "y": i}[axis]
+                if axis in self._pairspec:
+                    label = self._pairspec.get(axis)[idx]
+                else:
+                    label = self._data.names.get(axis, None)
                 axes.set(**{
                     f"{axis}scale": self._scales[axis]._scale,
-                    f"{axis}label": self._data.names.get(axis, None),
+                    f"{axis}label": label,
                 })
 
+            # TODO need to account for wrap
             if subplot_spec["sharex"] in (True, "col") and subplots.shape[0] - i > 1:
                 axes.xaxis.label.set_visible(False)
             if subplot_spec["sharey"] in (True, "row") and j > 0:
@@ -431,9 +475,9 @@ class Plot:
 
             title_parts = []
             for idx, dim in zip([i, j], ["row", "col"]):
-                if dim in facet_data:
-                    name = facet_data.names.get(dim, f"_{dim}_")
-                    level = facet_orders[dim][idx]
+                if dim in setup_data:
+                    name = setup_data.names.get(dim, f"_{dim}_")
+                    level = figure_dimensions[dim][idx]
                     title_parts.append(f"{name} = {level}")
             title = " | ".join(title_parts)
             axes.set_title(title)
@@ -519,9 +563,13 @@ class Plot:
 
         # TODO should handle pair logic here too, possibly assignment of x{n} -> x, etc
         keep = pd.Series(True, df.index)
-        for dim in ["col", "row"]:
+        for dim, axis in zip(["col", "row"], ["x", "y"]):
+            if axis in self._pairspec:
+                idx = self._pairspec[axis].index(subplot[dim])
+                df[axis] = df[f"{axis}{idx}"]
             if dim in df:
                 keep &= df[dim] == subplot[dim]
+
         return df[keep]
 
     def _scale_coords(self, df: DataFrame) -> DataFrame:
