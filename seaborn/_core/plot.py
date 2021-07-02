@@ -121,7 +121,7 @@ class Plot:
         self,
         x: Hashable | list[Hashable] | None = None,
         y: Hashable | list[Hashable] | None = None,
-        cartesian: bool = True,  # TODO bikeshed name
+        cartesian: bool = True,  # TODO bikeshed name, maybe product, but want verb/adj
         # TODO wrapping if only one variable is a list or not cartesian
         # TODO figure parameterization (sharex/sharey, etc.)
         # TODO other existing PairGrid things like corner?
@@ -147,7 +147,12 @@ class Plot:
         #   and especially the axis scaling, which will need to be pair specific
         # - How to resolve sharex/sharey between facet() and pair()?
 
+        # Do we only want to allow variable keys in the x/y list? Can we have lists of
+        # vectors, or is that too complicated?
+
         # TODO raise if pair called without source data? or add data= arg here?
+        data = self._data._source_data
+
         # TODO default to columns of source data if x and y are both None
         # TODO (BUT we want to not use columns assigned to mappings in that case...)
 
@@ -156,10 +161,11 @@ class Plot:
         for axis, arg in axes.items():
             # TODO more input validation
             if arg is not None:
-                # TODO we want to also accept Index objects but those are hashable
-                # so we need a smarter approach to allowing a single variable spec
-                # if isinstance(arg, abc.Hashable):
-                #     arg = [arg]
+                # TODO this is going to break with pandas Index/Series on <1.3.0
+                # https://github.com/pandas-dev/pandas/pull/41283
+                if isinstance(arg, abc.Hashable) and arg in data:
+                    # TODO this fails in a weird way if string is spelled wrong, etc.
+                    arg = [arg]
                 pairspec[axis] = list(arg)
 
         pairspec["variables"] = {}
@@ -369,12 +375,12 @@ class Plot:
         common_data = (
             self._data
             .concat(
-                self._facetspec.get("source", None),
-                self._facetspec.get("variables", None),
+                self._facetspec.get("source"),
+                self._facetspec.get("variables"),
             )
             .concat(
-                self._pairspec.get("source", None),
-                self._pairspec.get("variables", None),
+                self._pairspec.get("source"),
+                self._pairspec.get("variables"),
             )
         )
 
@@ -394,7 +400,7 @@ class Plot:
             if scale.type == "unknown" and any(var in layer for layer in layers):
                 # TODO this is copied from _setup_mappings ... ripe for abstraction!
                 all_data = pd.concat(
-                    [layer.data.frame.get(var, None) for layer in layers]
+                    [layer.data.frame.get(var) for layer in layers]
                 ).reset_index(drop=True)
                 scale.type = variable_type(all_data)
 
@@ -405,8 +411,8 @@ class Plot:
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
         setup_data = self._data.concat(
-            self._facetspec.get("source", None),
-            self._facetspec.get("variables", None),
+            self._facetspec.get("source"),
+            self._facetspec.get("variables"),
         )
 
         # TODO Validate that we do not have overlapping pair/facet specification
@@ -422,7 +428,7 @@ class Plot:
             if dim in setup_data:
                 data = setup_data.frame[dim]
                 figure_dimensions[dim] = categorical_order(
-                    data, self._facetspec.get(f"{dim}_order", None),
+                    data, self._facetspec.get(f"{dim}_order"),
                 )
             elif axis in self._pairspec:
                 # TODO different behavior for cartesian
@@ -438,6 +444,16 @@ class Plot:
             else:
                 subplot_spec[f"share{axis}"] = self._facetspec.get(f"share{axis}", True)
 
+        if not self._pairspec.get("cartesian", True):
+            # TODO Won't work with wrapping, and overall very confusing.
+            subplot_spec["nrows"] = 1
+            for axis in "xy":
+                # TODO we always want axis labels for noncartesian plots, but does it
+                # make sense to allow shared axes? Maybe we should turn visibility of
+                # labels back on if cartesian is False, and default to unshared limits,
+                # but allow them somehow...
+                subplot_spec[f"share{axis}"] = False
+
         figsize = getattr(self, "_figsize", None)
 
         if pyplot:
@@ -445,10 +461,18 @@ class Plot:
             self._figure = plt.figure(figsize=figsize)
         else:
             self._figure = mpl.figure.Figure(figsize=figsize)
+
         subplots = self._figure.subplots(**subplot_spec, squeeze=False)
 
         self._subplot_list = []
-        for (i, j), axes in np.ndenumerate(subplots):
+
+        if not self._pairspec or self._pairspec["cartesian"]:
+            iterplots = np.ndenumerate(subplots)
+        else:
+            indices = np.arange(subplot_spec["ncols"])
+            iterplots = zip(zip(indices, indices), subplots.flat)
+
+        for (i, j), axes in iterplots:
 
             self._subplot_list.append({
                 "axes": axes,
@@ -461,7 +485,7 @@ class Plot:
                 if axis in self._pairspec:
                     label = self._pairspec.get(axis)[idx]
                 else:
-                    label = self._data.names.get(axis, None)
+                    label = self._data.names.get(axis)
                 axes.set(**{
                     f"{axis}scale": self._scales[axis]._scale,
                     f"{axis}label": label,
@@ -473,6 +497,8 @@ class Plot:
             if subplot_spec["sharey"] in (True, "row") and j > 0:
                 axes.yaxis.label.set_visible(False)
 
+            # TODO should titles be set for each position along the pair dimension?
+            # (e.g., pair on y, facet on cols, should facet titles only go on top row?)
             title_parts = []
             for idx, dim in zip([i, j], ["row", "col"]):
                 if dim in setup_data:
@@ -493,9 +519,9 @@ class Plot:
         for var, mapping in self._mappings.items():
             if any(var in layer for layer in layers):
                 all_data = pd.concat(
-                    [layer.data.frame.get(var, None) for layer in layers]
+                    [layer.data.frame.get(var) for layer in layers]
                 ).reset_index(drop=True)
-                scale = self._scales.get(var, None)
+                scale = self._scales.get(var)
                 mapping.setup(all_data, scale)
 
     def _plot_layer(self, layer: Layer, mappings: dict[str, SemanticMapping]) -> None:
