@@ -1,8 +1,12 @@
 import functools
 import itertools
+import warnings
+import imghdr
+
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 import pytest
 from pandas.testing import assert_frame_equal, assert_series_equal
@@ -348,7 +352,7 @@ class TestAxisScaling:
         assert_vector_equal(m.passed_data[0]["x"], long_df[col].map(mpl.dates.date2num))
 
 
-class TestPlot:
+class TestPlotting:
 
     def test_matplotlib_object_creation(self):
 
@@ -522,6 +526,65 @@ class TestPlot:
         m = AdjustableMockMark()
         Plot(long_df, x="z", y="z").scale_numeric("x", "log").add(m).plot()
         assert_vector_equal(m.passed_data[0]["x"], long_df["z"] / 10)
+
+    def test_clone(self, long_df):
+
+        p1 = Plot(long_df)
+        p2 = p1.clone()
+        assert isinstance(p2, Plot)
+        assert p1 is not p2
+        assert p1._data._source_data is not p2._data._source_data
+
+        p2.add(MockMark())
+        assert not p1._layers
+
+    def test_default_is_no_pyplot(self):
+
+        p = Plot().plot()
+
+        assert not plt.get_fignums()
+        assert isinstance(p._figure, mpl.figure.Figure)
+
+    def test_with_pyplot(self):
+
+        p = Plot().plot(pyplot=True)
+
+        assert len(plt.get_fignums()) == 1
+        fig = plt.gcf()
+        assert p._figure is fig
+
+    def test_show(self):
+
+        p = Plot()
+
+        with warnings.catch_warnings(record=True) as msg:
+            out = p.show(block=False)
+        assert out is None
+        assert not hasattr(p, "_figure")
+
+        assert len(plt.get_fignums()) == 1
+        fig = plt.gcf()
+
+        gui_backend = (
+            # From https://github.com/matplotlib/matplotlib/issues/20281
+            fig.canvas.manager.show != mpl.backend_bases.FigureManagerBase.show
+        )
+        if not gui_backend:
+            assert msg
+
+    def test_png_representation(self):
+
+        p = Plot()
+        out = p._repr_png_()
+
+        assert not hasattr(p, "_figure")
+        assert isinstance(out, bytes)
+        assert imghdr.what("", out) == "png"
+
+    @pytest.mark.xfail(reason="Plot.save not yet implemented")
+    def test_save(self):
+
+        Plot().save()
 
 
 class TestFacetInterface:
