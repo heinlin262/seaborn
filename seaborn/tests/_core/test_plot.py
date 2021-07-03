@@ -523,8 +523,165 @@ class TestPlot:
         Plot(long_df, x="z", y="z").scale_numeric("x", "log").add(m).plot()
         assert_vector_equal(m.passed_data[0]["x"], long_df["z"] / 10)
 
-    # TODO Current untested includes:
-    # - anything having to do with semantic mapping
-    # - faceting parameterization beyond basics
-    # - interaction with existing matplotlib objects
-    # - any important corner cases in the original test_core suite
+
+class TestFacetInterface:
+
+    @pytest.fixture(scope="class", params=["row", "col"])
+    def dim(self, request):
+        return request.param
+
+    @pytest.fixture(scope="class", params=["reverse", "subset", "expand"])
+    def reorder(self, request):
+        return {
+            "reverse": lambda x: x[::-1],
+            "subset": lambda x: x[:-1],
+            "expand": lambda x: x + ["z"],
+        }[request.param]
+
+    def check_facet_results_1d(self, p, df, dim, key, order=None):
+
+        p = p.plot()
+
+        order = categorical_order(df[key], order)
+        assert len(p._figure.axes) == len(order)
+
+        other_dim = {"row": "col", "col": "row"}[dim]
+
+        for subplot, level in zip(p._subplot_list, order):
+            assert subplot[dim] == level
+            assert subplot[other_dim] is None
+            assert subplot["axes"].get_title() == f"{key} = {level}"
+            assert getattr(subplot["axes"].get_gridspec(), f"n{dim}s") == len(order)
+
+    def test_1d_from_init(self, long_df, dim):
+
+        key = "a"
+        p = Plot(long_df, **{dim: key})
+        self.check_facet_results_1d(p, long_df, dim, key)
+
+    def test_1d_from_facet(self, long_df, dim):
+
+        key = "a"
+        p = Plot(long_df).facet(**{dim: key})
+        self.check_facet_results_1d(p, long_df, dim, key)
+
+    def test_1d_from_init_as_vector(self, long_df, dim):
+
+        key = "a"
+        p = Plot(long_df, **{dim: long_df[key]})
+        self.check_facet_results_1d(p, long_df, dim, key)
+
+    def test_1d_from_facet_as_vector(self, long_df, dim):
+
+        key = "a"
+        p = Plot(long_df).facet(**{dim: long_df[key]})
+        self.check_facet_results_1d(p, long_df, dim, key)
+
+    def test_1d_from_init_with_order(self, long_df, dim, reorder):
+
+        key = "a"
+        order = reorder(categorical_order(long_df[key]))
+        p = Plot(long_df, **{dim: key}).facet(**{f"{dim}_order": order})
+        self.check_facet_results_1d(p, long_df, dim, key, order)
+
+    def test_1d_from_facet_with_order(self, long_df, dim, reorder):
+
+        key = "a"
+        order = reorder(categorical_order(long_df[key]))
+        p = Plot(long_df).facet(**{dim: key, f"{dim}_order": order})
+        self.check_facet_results_1d(p, long_df, dim, key, order)
+
+    def check_facet_results_2d(self, p, df, variables, order=None):
+
+        p = p.plot()
+
+        if order is None:
+            order = {dim: categorical_order(df[key]) for dim, key in variables.items()}
+
+        levels = itertools.product(*[order[dim] for dim in ["row", "col"]])
+        assert len(p._subplot_list) == len(list(levels))
+
+        for subplot, (row_level, col_level) in zip(p._subplot_list, levels):
+            assert subplot["row"] == row_level
+            assert subplot["col"] == col_level
+            assert subplot["axes"].get_title() == (
+                f"{variables['row']} = {row_level} | {variables['col']} = {col_level}"
+            )
+            gridspec = subplot["axes"].get_gridspec()
+            assert gridspec.nrows == len(levels["row"])
+            assert gridspec.ncols == len(levels["col"])
+
+    def test_2d_from_init(self, long_df):
+
+        variables = {"row": "a", "col": "c"}
+        p = Plot(long_df, **variables)
+        self.check_facet_results_2d(p, long_df, variables)
+
+    def test_2d_from_facet(self, long_df):
+
+        variables = {"row": "a", "col": "c"}
+        p = Plot(long_df).facet(**variables)
+        self.check_facet_results_2d(p, long_df, variables)
+
+    def test_2d_from_init_and_facet(self, long_df):
+
+        variables = {"row": "a", "col": "c"}
+        p = Plot(long_df, row=variables["row"]).facet(col=variables["col"])
+        self.check_facet_results_2d(p, long_df, variables)
+
+    def test_2d_from_facet_with_data(self, long_df):
+
+        variables = {"row": "a", "col": "c"}
+        p = Plot().facet(**variables, data=long_df)
+        self.check_facet_results_2d(p, long_df, variables)
+
+    def test_2d_from_facet_with_order(self, long_df, reorder):
+
+        variables = {"row": "a", "col": "c"}
+        order = {
+            dim: reorder(categorical_order(long_df[key]))
+            for dim, key in variables.items()
+        }
+
+        order_kws = {"row_order": order["row"], "col_order": order["col"]}
+        p = Plot(long_df).facet(**variables, **order_kws)
+        self.check_facet_results_2d(p, long_df, variables, order)
+
+    def test_axis_sharing(self, long_df):
+
+        variables = {"row": "a", "col": "c"}
+
+        p = Plot(long_df).facet(**variables).plot()
+        root, *other = p._figure.axes
+        for axis in "xy":
+            shareset = getattr(root, f"get_shared_{axis}_axes")()
+            assert all(shareset.joined(root, ax) for ax in other)
+
+        p = Plot(long_df).facet(**variables, sharex=False, sharey=False).plot()
+        root, *other = p._figure.axes
+        for axis in "xy":
+            shareset = getattr(root, f"get_shared_{axis}_axes")()
+            assert not any(shareset.joined(root, ax) for ax in other)
+
+        p = Plot(long_df).facet(**variables, sharex="col", sharey="row").plot()
+
+        shape = (
+            len(categorical_order(long_df[variables["row"]])),
+            len(categorical_order(long_df[variables["col"]])),
+        )
+        axes_matrix = np.reshape(p._figure.axes, shape)
+
+        for (shared, unshared), vectors in zip(
+            ["yx", "xy"], [axes_matrix, axes_matrix.T]
+        ):
+            for root, *other in vectors:
+                shareset = {
+                    axis: getattr(root, f"get_shared_{axis}_axes")() for axis in "xy"
+                }
+                assert all(shareset[shared].joined(root, ax) for ax in other)
+                assert not any(shareset[unshared].joined(root, ax) for ax in other)
+
+# TODO Current untested includes:
+# - anything having to do with semantic mapping
+# - interaction with existing matplotlib objects
+# - any important corner cases in the original test_core suite
