@@ -500,6 +500,66 @@ class TestPlotting:
             for var, col in axis_vars.items():
                 assert_vector_equal(data[var], long_df[col])
 
+    def test_paired_variables(self, long_df):
+
+        x = ["x", "y"]
+        y = ["f", "z"]
+
+        m = MockMark()
+        Plot(long_df).pair(x, y).add(m).plot()
+
+        var_product = itertools.product(y, x)
+
+        for data, (y_i, x_i) in zip(m.passed_data, var_product):
+            assert_vector_equal(data["x"], long_df[x_i].astype(float))
+            assert_vector_equal(data["y"], long_df[y_i].astype(float))
+
+    def test_paired_one_dimension(self, long_df):
+
+        x = ["y", "z"]
+
+        m = MockMark()
+        Plot(long_df).pair(x).add(m).plot()
+
+        for data, x_i in zip(m.passed_data, x):
+            assert_vector_equal(data["x"], long_df[x_i].astype(float))
+
+    def test_paired_variables_one_subset(self, long_df):
+
+        x = ["x", "y"]
+        y = ["f", "z"]
+        group = "a"
+
+        long_df["x"] = long_df["x"].astype(float)  # simplify vector comparison
+
+        m = MockMark()
+        Plot(long_df, group=group).pair(x, y).add(m).plot()
+
+        groups = categorical_order(long_df[group])
+        var_product = itertools.product(y, x, groups)
+
+        for data, (y_i, x_i, g_i) in zip(m.passed_data, var_product):
+            rows = long_df[group] == g_i
+            assert_vector_equal(data["x"], long_df.loc[rows, x_i])
+            assert_vector_equal(data["y"], long_df.loc[rows, y_i])
+
+    def test_paired_and_faceted(self, long_df):
+
+        x = ["y", "z"]
+        y = "f"
+        row = "c"
+
+        m = MockMark()
+        Plot(long_df, y=y, row=row).pair(x).add(m).plot()
+
+        facets = categorical_order(long_df[row])
+        var_product = itertools.product(facets, x)
+
+        for data, (f_i, x_i) in zip(m.passed_data, var_product):
+            rows = long_df[row] == f_i
+            assert_vector_equal(data["x"], long_df.loc[rows, x_i])
+            assert_vector_equal(data["y"], long_df.loc[rows, y])
+
     def test_adjustments(self, long_df):
 
         orig_df = long_df.copy(deep=True)
@@ -743,6 +803,85 @@ class TestFacetInterface:
                 }
                 assert all(shareset[shared].joined(root, ax) for ax in other)
                 assert not any(shareset[unshared].joined(root, ax) for ax in other)
+
+
+class TestPairInterface:
+
+    def check_pair_grid(self, p, x, y):
+
+        xys = itertools.product(y, x)
+
+        for (y_i, x_j), subplot in zip(xys, p._subplot_list):
+
+            ax = subplot["axes"]
+            assert ax.get_xlabel() == "" if x_j is None else x_j
+            assert ax.get_ylabel() == "" if y_i is None else y_i
+
+            gs = subplot["axes"].get_gridspec()
+            assert gs.ncols == len(x)
+            assert gs.nrows == len(y)
+
+    @pytest.mark.parametrize(
+        "vector_type", [list, np.array, pd.Series, pd.Index]
+    )
+    def test_all_numeric(self, long_df, vector_type):
+
+        x, y = ["x", "y", "z"], ["s", "f"]
+        p = Plot(long_df).pair(vector_type(x), vector_type(y)).plot()
+        self.check_pair_grid(p, x, y)
+
+    def test_single_variable_key(self, long_df):
+
+        x, y = ["x", "y"], "z"
+
+        p = Plot(long_df).pair(x, y).plot()
+        self.check_pair_grid(p, x, [y])
+
+    @pytest.mark.parametrize("dim", ["x", "y"])
+    def test_single_dimension(self, long_df, dim):
+
+        variables = {"x": None, "y": None}
+        variables[dim] = ["x", "y", "z"]
+        p = Plot(long_df).pair(**variables).plot()
+        variables = {k: [v] if v is None else v for k, v in variables.items()}
+        self.check_pair_grid(p, **variables)
+
+    def test_non_cartesian(self, long_df):
+
+        x = ["x", "y"]
+        y = ["f", "z"]
+
+        p = Plot(long_df).pair(x, y, cartesian=False).plot()
+
+        for i, subplot in enumerate(p._subplot_list):
+            ax = subplot["axes"]
+            assert ax.get_xlabel() == x[i]
+            assert ax.get_ylabel() == y[i]
+            assert ax.get_gridspec().nrows == 1
+            assert ax.get_gridspec().ncols == len(x) == len(y)
+
+    def test_with_facets(self, long_df):
+
+        x = "x"
+        y = ["y", "z"]
+        col = "a"
+
+        p = Plot(long_df, x=x).facet(col).pair(y=y).plot()
+
+        facet_levels = categorical_order(long_df[col])
+        dims = itertools.product(y, facet_levels)
+
+        for (y_i, col_i), subplot in zip(dims, p._subplot_list):
+
+            ax = subplot["axes"]
+            assert ax.get_xlabel() == x
+            assert ax.get_ylabel() == y_i
+            assert ax.get_title() == f"{col} = {col_i}"
+
+            gs = subplot["axes"].get_gridspec()
+            assert gs.ncols == len(facet_levels)
+            assert gs.nrows == len(y)
+
 
 # TODO Current untested includes:
 # - anything having to do with semantic mapping

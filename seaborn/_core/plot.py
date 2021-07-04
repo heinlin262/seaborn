@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import itertools
 from copy import deepcopy
-from collections import abc
 
 import numpy as np
 import pandas as pd
@@ -121,7 +120,7 @@ class Plot:
         self,
         x: Hashable | list[Hashable] | None = None,
         y: Hashable | list[Hashable] | None = None,
-        cartesian: bool = True,  # TODO bikeshed name, maybe product, but want verb/adj
+        cartesian: bool = True,  # TODO bikeshed name, maybe cross?
         # TODO wrapping if only one variable is a list or not cartesian
         # TODO figure parameterization (sharex/sharey, etc.)
         # TODO other existing PairGrid things like corner?
@@ -161,9 +160,17 @@ class Plot:
         for axis, arg in axes.items():
             # TODO more input validation
             if arg is not None:
-                # TODO this is going to break with pandas Index/Series on <1.3.0
+
+                # Canonical way of testing hashability broken on pandas < 1.3
+                # hashable_arg = isinstance(arg, abc.Hashable)
                 # https://github.com/pandas-dev/pandas/pull/41283
-                if isinstance(arg, abc.Hashable) and arg in data:
+                try:
+                    hash(arg)
+                    hashable_arg = True
+                except TypeError:
+                    hashable_arg = False
+
+                if hashable_arg and arg in data:
                     # TODO this fails in a weird way if string is spelled wrong, etc.
                     arg = [arg]
                 pairspec[axis] = list(arg)
