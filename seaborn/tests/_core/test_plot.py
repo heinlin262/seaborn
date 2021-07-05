@@ -861,6 +861,25 @@ class TestPairInterface:
             assert ax.get_gridspec().nrows == 1
             assert ax.get_gridspec().ncols == len(x) == len(y)
 
+    def test_with_no_variables(self, long_df):
+
+        all_cols = long_df.columns
+
+        p1 = Plot(long_df).pair()
+        for axis in "xy":
+            assert p1._pairspec[axis] == all_cols.to_list()
+
+        p2 = Plot(long_df, y="y").pair()
+        assert all_cols.difference(p2._pairspec["x"]).item() == "y"
+        assert "y" not in p2._pairspec
+
+        p3 = Plot(long_df, hue="a").pair()
+        for axis in "xy":
+            assert all_cols.difference(p3._pairspec[axis]).item() == "a"
+
+        with pytest.raises(RuntimeError, match="You must pass `data`"):
+            Plot().pair()
+
     def test_with_facets(self, long_df):
 
         x = "x"

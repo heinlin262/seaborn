@@ -132,12 +132,6 @@ class Plot:
 
         # TODO Problems to solve:
         #
-        # - How to get a default square grid of all x vs all y?
-        #   - If both are None, use the data passed to Plot(), dropping any mappings
-        #     defined there?
-        #    - Should we accept a `data` object here?
-        #    - Should we drop any mappings used anyhere? (I think no?)
-        #
         # - Unclear is how to handle the diagonal plots that PairGrid offers
         #
         # - Implementing this will require lots of downscale changes in figure setup,
@@ -148,21 +142,38 @@ class Plot:
         #     single method for figure setup (Plot.configure?) that exposes them.
         # - Do we want to allow lists of vectors to define the pairing? Everywhere
         #   else we have a variable specification, we accept Hashable | Vector
+        #   - Ideally this SHOULD work without special handling now. But it does not
+        #     because things downstream are not thought out clearly.
 
-        # TODO handle default with x=None, y=None
         # TODO raise if pair called without source data? or add data= arg here?
-        # Ideally this SHOULD work without special handling now. But it does not
-        # because things downstream are not thought out clearly.
 
         pairspec = {}
-        axes = {"x": x, "y": y}
-        for axis, arg in axes.items():
-            # TODO more input validation
-            if arg is not None:
-                if isinstance(arg, (str, int)):
-                    err = f"You must pass a sequence of variable keys to `{axis}`"
-                    raise TypeError(err)
-                pairspec[axis] = list(arg)
+
+        if x is None and y is None:
+
+            # Default to using all columns in the input source data, aside from
+            # those that were assigned to a variable in the constructor
+            # TODO Do we want to allow additional filtering by variable type?
+
+            if self._data._source_data is None:
+                err = "You must pass `data` in the constructor to use default pairing."
+                raise RuntimeError(err)
+
+            all_unused_columns = [
+                key for key in self._data._source_data.columns
+                if key not in self._data.names.values()
+            ]
+            for axis in "xy":
+                if axis not in self._data:
+                    pairspec[axis] = all_unused_columns
+        else:
+            axes = {"x": x, "y": y}
+            for axis, arg in axes.items():
+                if arg is not None:
+                    if isinstance(arg, (str, int)):
+                        err = f"You must pass a sequence of variable keys to `{axis}`"
+                        raise TypeError(err)
+                    pairspec[axis] = list(arg)
 
         pairspec["variables"] = {}
         for axis in "xy":
