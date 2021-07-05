@@ -41,7 +41,9 @@ class Plot:
     _mappings: dict[str, SemanticMapping]  # TODO keys as Literal, or use TypedDict?
     _scales: dict[str, ScaleBase]
 
-    _facetspec: dict[str, Any]  # TODO any need to be more strict on values?
+    # TODO use TypedDict here
+    _subplotspec: dict[str, Any]
+    _facetspec: dict[str, Any]
     _pairspec: dict[str, Any]
 
     _figure: Figure
@@ -71,6 +73,7 @@ class Plot:
             "y": ScaleWrapper(mpl.scale.LinearScale("y"), "unknown"),
         }
 
+        self._subplotspec = {}
         self._facetspec = {}
         self._pairspec = {}
 
@@ -123,7 +126,7 @@ class Plot:
         y: Hashable | list[Hashable] | None = None,
         cartesian: bool = True,  # TODO bikeshed name, maybe cross?
         # TODO wrapping if only one variable is a list or not cartesian
-        # TODO figure parameterization (sharex/sharey, etc.)
+        # TODO figure parameterization
         # TODO other existing PairGrid things like corner?
     ) -> Plot:
 
@@ -189,12 +192,9 @@ class Plot:
         row_order: OrderSpec = None,
         wrap: int | None = None,
         data: DataSource = None,
-        sharex: bool | Literal["row", "col"] = True,
-        sharey: bool | Literal["row", "col"] = True,
-        # TODO or sharexy: bool | Literal | tuple[bool | Literal]?
     ) -> Plot:
 
-        # Note: can't pass `None` here or it will uninherit the `Plot()` def
+        # Can't pass `None` here or it will disinherit the `Plot()` def
         variables = {}
         if col is not None:
             variables["col"] = col
@@ -208,17 +208,12 @@ class Plot:
         # this is more convenient for the (dominant?) case where there is one
         # faceting variable
 
-        # TODO Basic faceting functionality is tested, but there aren't tests
-        # for all the permutations of this interface
-
         self._facetspec.update({
             "source": data,
             "variables": variables,
             "col_order": None if col_order is None else list(col_order),
             "row_order": None if row_order is None else list(row_order),
             "wrap": wrap,
-            "sharex": sharex,
-            "sharey": sharey
         })
 
         return self
@@ -317,11 +312,18 @@ class Plot:
         raise NotImplementedError
         return self
 
-    def configure(self) -> Plot:
+    def configure(
+        self,
+        sharex: bool | Literal["row", "col"] | None = None,
+        sharey: bool | Literal["row", "col"] | None = None,
+    ) -> Plot:
 
-        # TODO I think this is a good name for a general "parameters that control
-        # figure setup" method. Partly because it's kind of a pun.
-        raise NotImplementedError
+        subplot_keys = ["sharex", "sharey"]
+        for key in subplot_keys:
+            val = locals()[key]
+            if val is not None:
+                self._subplotspec[key] = val
+
         return self
 
     def resize(self, val):
@@ -417,12 +419,13 @@ class Plot:
         # TODO use context manager with theme that has been set
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
+        # Get the full set of assigned variables, whether from constructor or methods
         setup_data = (
             self._data.concat(
                 self._facetspec.get("source"),
                 self._facetspec.get("variables"),
             ).concat(
-                self._pairspec.get("source"),
+                self._pairspec.get("source"),  # Currently always None
                 self._pairspec.get("variables"),
             )
         )
@@ -441,30 +444,27 @@ class Plot:
                 continue
             raise RuntimeError(err)  # TODO what err class? Define FigureSpecError?
 
-        # TODO Ignoring col/row wrapping, but we need to deal with that
-
         # --- Subplot grid parameterization
 
+        # TODO Ignoring col/row wrapping, but we need to deal with that
+
+        # TODO build this from self._subplotspec?
         subplot_spec = {}
+
         figure_dimensions = {}
         for dim, axis in zip(["col", "row"], ["x", "y"]):
+
             if dim in setup_data:
                 figure_dimensions[dim] = categorical_order(
                     setup_data.frame[dim], self._facetspec.get(f"{dim}_order"),
                 )
             elif axis in self._pairspec:
-                # TODO different behavior for cartesian
                 # TODO pass original column names? Or internal variable names?
                 figure_dimensions[dim] = self._pairspec[axis]
             else:
                 figure_dimensions[dim] = [None]
-            subplot_spec[f"n{dim}s"] = len(figure_dimensions[dim])
 
-            # TODO Defaults for sharex/y should be defined in one place
-            if axis in self._pairspec:
-                subplot_spec[f"share{axis}"] = dim  # TODO allows unshared pair axes
-            else:
-                subplot_spec[f"share{axis}"] = self._facetspec.get(f"share{axis}", True)
+            subplot_spec[f"n{dim}s"] = len(figure_dimensions[dim])
 
         if not self._pairspec.get("cartesian", True):
             # TODO Won't work with wrapping, and overall very confusing.
@@ -475,6 +475,20 @@ class Plot:
                 # labels back on if cartesian is False, and default to unshared limits,
                 # but allow them somehow...
                 subplot_spec[f"share{axis}"] = False
+
+        # Work out the defaults for sharex/sharey
+        axis_to_dim = {"x": "col", "y": "row"}
+        for axis in "xy":
+            key = f"share{axis}"
+            if key in self._subplotspec:
+                val = self._subplotspec[key]
+            else:
+                if axis in self._pairspec:
+                    val = axis_to_dim[axis]
+                else:
+                    val = True
+            subplot_spec[key] = val
+        print(subplot_spec)
 
         # --- Figure initialization
 

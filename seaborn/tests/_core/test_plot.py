@@ -774,25 +774,26 @@ class TestFacetInterface:
 
         variables = {"row": "a", "col": "c"}
 
-        p = Plot(long_df).facet(**variables).plot()
-        root, *other = p._figure.axes
+        p = Plot(long_df).facet(**variables)
+
+        p1 = p.clone().plot()
+        root, *other = p1._figure.axes
         for axis in "xy":
             shareset = getattr(root, f"get_shared_{axis}_axes")()
             assert all(shareset.joined(root, ax) for ax in other)
 
-        p = Plot(long_df).facet(**variables, sharex=False, sharey=False).plot()
-        root, *other = p._figure.axes
+        p2 = p.clone().configure(sharex=False, sharey=False).plot()
+        root, *other = p2._figure.axes
         for axis in "xy":
             shareset = getattr(root, f"get_shared_{axis}_axes")()
             assert not any(shareset.joined(root, ax) for ax in other)
 
-        p = Plot(long_df).facet(**variables, sharex="col", sharey="row").plot()
-
+        p3 = p.clone().configure(sharex="col", sharey="row").plot()
         shape = (
             len(categorical_order(long_df[variables["row"]])),
             len(categorical_order(long_df[variables["col"]])),
         )
-        axes_matrix = np.reshape(p._figure.axes, shape)
+        axes_matrix = np.reshape(p3._figure.axes, shape)
 
         for (shared, unshared), vectors in zip(
             ["yx", "xy"], [axes_matrix, axes_matrix.T]
@@ -903,6 +904,51 @@ class TestPairInterface:
         expected = f"Cannot wrap the {facet_dim} while pairing on {pair_axis}."
         with pytest.raises(RuntimeError, match=expected):
             p.plot()
+
+    def test_axis_sharing(self, long_df):
+
+        p = Plot(long_df).pair(x=["a", "b"], y=["y", "z"])
+        shape = 2, 2
+
+        p1 = p.clone().plot()
+        axes_matrix = np.reshape(p1._figure.axes, shape)
+
+        for root, *other in axes_matrix:  # Test row-wise sharing
+            x_shareset = getattr(root, "get_shared_x_axes")()
+            assert not any(x_shareset.joined(root, ax) for ax in other)
+            y_shareset = getattr(root, "get_shared_y_axes")()
+            assert all(y_shareset.joined(root, ax) for ax in other)
+
+        for root, *other in axes_matrix.T:  # Test col-wise sharing
+            x_shareset = getattr(root, "get_shared_x_axes")()
+            assert all(x_shareset.joined(root, ax) for ax in other)
+            y_shareset = getattr(root, "get_shared_y_axes")()
+            assert not any(y_shareset.joined(root, ax) for ax in other)
+
+        p2 = p.clone().configure(sharex=False, sharey=False).plot()
+        root, *other = p2._figure.axes
+        for axis in "xy":
+            shareset = getattr(root, f"get_shared_{axis}_axes")()
+            assert not any(shareset.joined(root, ax) for ax in other)
+
+    def test_axis_sharing_with_facets(self, long_df):
+
+        p = Plot(long_df, y="y").pair(x=["a", "b"]).facet(row="c").plot()
+        shape = 2, 2
+
+        axes_matrix = np.reshape(p._figure.axes, shape)
+
+        for root, *other in axes_matrix:  # Test row-wise sharing
+            x_shareset = getattr(root, "get_shared_x_axes")()
+            assert not any(x_shareset.joined(root, ax) for ax in other)
+            y_shareset = getattr(root, "get_shared_y_axes")()
+            assert all(y_shareset.joined(root, ax) for ax in other)
+
+        for root, *other in axes_matrix.T:  # Test col-wise sharing
+            x_shareset = getattr(root, "get_shared_x_axes")()
+            assert all(x_shareset.joined(root, ax) for ax in other)
+            y_shareset = getattr(root, "get_shared_y_axes")()
+            assert all(y_shareset.joined(root, ax) for ax in other)
 
 
 # TODO Current untested includes:
