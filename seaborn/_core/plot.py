@@ -122,8 +122,8 @@ class Plot:
 
     def pair(
         self,
-        x: Hashable | list[Hashable] | None = None,
-        y: Hashable | list[Hashable] | None = None,
+        x: list[Hashable] | Index[Hashable] | None = None,
+        y: list[Hashable] | Index[Hashable] | None = None,
         cartesian: bool = True,  # TODO bikeshed name, maybe cross?
         # TODO wrapping if only one variable is a list or not cartesian
         # TODO figure parameterization
@@ -151,27 +151,17 @@ class Plot:
         # vectors, or is that too complicated? We will have to choose either:
         # (a) single string assignments or (b) allow lists of vectors.
 
+        # TODO handle default with x=None, y=None
         # TODO raise if pair called without source data? or add data= arg here?
-        data = self._data._source_data
 
         pairspec = {}
         axes = {"x": x, "y": y}
         for axis, arg in axes.items():
             # TODO more input validation
             if arg is not None:
-
-                # Canonical way of testing hashability broken on pandas < 1.3
-                # hashable_arg = isinstance(arg, abc.Hashable)
-                # https://github.com/pandas-dev/pandas/pull/41283
-                try:
-                    hash(arg)
-                    hashable_arg = True
-                except TypeError:
-                    hashable_arg = False
-
-                if hashable_arg and arg in data:
-                    # TODO this fails in a weird way if string is spelled wrong, etc.
-                    arg = [arg]
+                if isinstance(arg, (str, int)):
+                    err = f"You must pass a sequence of variable keys to `{axis}`"
+                    raise TypeError(err)
                 pairspec[axis] = list(arg)
 
         pairspec["variables"] = {}

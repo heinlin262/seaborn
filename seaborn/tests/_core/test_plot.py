@@ -831,12 +831,12 @@ class TestPairInterface:
         p = Plot(long_df).pair(vector_type(x), vector_type(y)).plot()
         self.check_pair_grid(p, x, y)
 
-    def test_single_variable_key(self, long_df):
+    def test_single_variable_key_raises(self, long_df):
 
-        x, y = ["x", "y"], "z"
-
-        p = Plot(long_df).pair(x, y).plot()
-        self.check_pair_grid(p, x, [y])
+        p = Plot(long_df)
+        err = "You must pass a sequence of variable keys to `y`"
+        with pytest.raises(TypeError, match=err):
+            p.pair(x=["x", "y"], y="z")
 
     @pytest.mark.parametrize("dim", ["x", "y"])
     def test_single_dimension(self, long_df, dim):
