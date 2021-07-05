@@ -7,6 +7,7 @@ from copy import deepcopy
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 from seaborn._core.rules import categorical_order, variable_type
 from seaborn._core.data import PlotData
@@ -126,34 +127,29 @@ class Plot:
         # TODO other existing PairGrid things like corner?
     ) -> Plot:
 
-        # TODO Basic idea is to implement PairGrid functionality within this interface
-        # But want to be even more powerful in a few ways:
-        # - combined pairing and faceting
-        #   - need to decide whether rows/cols are either facets OR pairs,
-        #     or if they can be composed (feasible, but more complicated)
-        # - "non-product" (need a name) pairing, i.e. for len(x) == len(y) == n,
-        #   make n subplots with x[0] v y[0], x[1] v y[1], etc.
-        # - uni-dimensional pairing
-        #   - i.e. if only x or y is assigned, to support a grid of histograms, etc.
-
-        # Problems to solve:
-        # - How to get a default square grid of all x vs all y? If x and y are None,
-        #   use all variables in self._data (dropping those used for semantic mapping?)
-        #   What if we want to specify the subset of variables to use for a square grid,
-        #   is it necessary to specify `x=cols, y=cols`?
+        # TODO Problems to solve:
+        #
+        # - How to get a default square grid of all x vs all y?
+        #   - If both are None, use the data passed to Plot(), dropping any mappings
+        #     defined there?
+        #    - Should we accept a `data` object here?
+        #    - Should we drop any mappings used anyhere? (I think no?)
+        #
         # - Unclear is how to handle the diagonal plots that PairGrid offers
+        #
         # - Implementing this will require lots of downscale changes in figure setup,
         #   and especially the axis scaling, which will need to be pair specific
+        #
         # - How to resolve sharex/sharey between facet() and pair()?
+        #   - I think we should not have these params in either, and instead have a
+        #     single method for figure setup (Plot.configure?) that exposes them.
 
         # Do we only want to allow variable keys in the x/y list? Can we have lists of
-        # vectors, or is that too complicated?
+        # vectors, or is that too complicated? We will have to choose either:
+        # (a) single string assignments or (b) allow lists of vectors.
 
         # TODO raise if pair called without source data? or add data= arg here?
         data = self._data._source_data
-
-        # TODO default to columns of source data if x and y are both None
-        # TODO (BUT we want to not use columns assigned to mappings in that case...)
 
         pairspec = {}
         axes = {"x": x, "y": y}
@@ -318,7 +314,14 @@ class Plot:
 
         # TODO Plot-specific themes using the seaborn theming system
         # TODO should this also be where custom figure size goes?
-        raise NotImplementedError()
+        raise NotImplementedError
+        return self
+
+    def configure(self) -> Plot:
+
+        # TODO I think this is a good name for a general "parameters that control
+        # figure setup" method. Partly because it's kind of a pun.
+        raise NotImplementedError
         return self
 
     def resize(self, val):
@@ -339,12 +342,7 @@ class Plot:
         self._setup_mappings()
         self._setup_figure(pyplot)
 
-        # Abort early if we've just set up a blank figure
-        if not self._layers:
-            return self
-
         for layer in self._layers:
-
             layer_mappings = {k: v for k, v in self._mappings.items() if k in layer}
             self._plot_layer(layer, layer_mappings)
 
@@ -364,8 +362,6 @@ class Plot:
         # Keep an eye on whether matplotlib implements "attaching" an existing
         # figure to pyplot: https://github.com/matplotlib/matplotlib/pull/14024
         self.clone().plot(pyplot=True)
-
-        import matplotlib.pyplot as plt
         plt.show(**kwargs)
 
     def save(self) -> Plot:  # TODO perhaps this should not return self?
@@ -376,6 +372,8 @@ class Plot:
     # ================================================================================ #
     # End of public API
     # ================================================================================ #
+
+    # TODO order these methods to match the order they get called in
 
     def _setup_layers(self):
 
@@ -413,29 +411,46 @@ class Plot:
 
     def _setup_figure(self, pyplot: bool = False) -> None:
 
+        # --- Parsing the faceting/pairing parameterization to specify figure grid
+
         # TODO add external API for parameterizing figure, (size , autolayout, etc.)
         # TODO use context manager with theme that has been set
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
-        setup_data = self._data.concat(
-            self._facetspec.get("source"),
-            self._facetspec.get("variables"),
+        setup_data = (
+            self._data.concat(
+                self._facetspec.get("source"),
+                self._facetspec.get("variables"),
+            ).concat(
+                self._pairspec.get("source"),
+                self._pairspec.get("variables"),
+            )
         )
 
-        # TODO Validate that we do not have overlapping pair/facet specification
-        # i.e. we cannot pair on x and facet on columns
+        # Reject specs that pair and facet on (or wrap to) the same figure dimension
+        overlaps = {"x": ["columns", "rows"], "y": ["rows", "columns"]}
+        for pair_axis, (facet_dim, wrap_dim) in overlaps.items():
 
-        setup_data = setup_data.concat(None, self._pairspec.get("variables", {}))
+            if pair_axis not in self._pairspec:
+                continue
+            elif facet_dim[:3] in setup_data:
+                err = f"Cannot facet on the {facet_dim} while pairing on {pair_axis}."
+            elif wrap_dim[:3] in setup_data and self._facetspec.get("wrap"):
+                err = f"Cannot wrap the {wrap_dim} while pairing on {pair_axis}."
+            else:
+                continue
+            raise RuntimeError(err)  # TODO what err class? Define FigureSpecError?
 
         # TODO Ignoring col/row wrapping, but we need to deal with that
 
-        figure_dimensions = {}
+        # --- Subplot grid parameterization
+
         subplot_spec = {}
+        figure_dimensions = {}
         for dim, axis in zip(["col", "row"], ["x", "y"]):
             if dim in setup_data:
-                data = setup_data.frame[dim]
                 figure_dimensions[dim] = categorical_order(
-                    data, self._facetspec.get(f"{dim}_order"),
+                    setup_data.frame[dim], self._facetspec.get(f"{dim}_order"),
                 )
             elif axis in self._pairspec:
                 # TODO different behavior for cartesian
@@ -461,15 +476,18 @@ class Plot:
                 # but allow them somehow...
                 subplot_spec[f"share{axis}"] = False
 
+        # --- Figure initialization
+
         figsize = getattr(self, "_figsize", None)
 
         if pyplot:
-            import matplotlib.pyplot as plt
             self._figure = plt.figure(figsize=figsize)
         else:
             self._figure = mpl.figure.Figure(figsize=figsize)
 
         subplots = self._figure.subplots(**subplot_spec, squeeze=False)
+
+        # --- Building the internal subplot list and add default decorations
 
         self._subplot_list = []
 
@@ -479,10 +497,10 @@ class Plot:
             indices = np.arange(subplot_spec["ncols"])
             iterplots = zip(zip(indices, indices), subplots.flat)
 
-        for (i, j), axes in iterplots:
+        for (i, j), ax in iterplots:
 
             self._subplot_list.append({
-                "axes": axes,
+                "ax": ax,
                 "row": figure_dimensions["row"][i],
                 "col": figure_dimensions["col"][j],
             })
@@ -493,16 +511,16 @@ class Plot:
                     label = self._pairspec.get(axis)[idx]
                 else:
                     label = self._data.names.get(axis)
-                axes.set(**{
+                ax.set(**{
                     f"{axis}scale": self._scales[axis]._scale,
                     f"{axis}label": label,
                 })
 
             # TODO need to account for wrap
             if subplot_spec["sharex"] in (True, "col") and subplots.shape[0] - i > 1:
-                axes.xaxis.label.set_visible(False)
+                ax.xaxis.label.set_visible(False)
             if subplot_spec["sharey"] in (True, "row") and j > 0:
-                axes.yaxis.label.set_visible(False)
+                ax.yaxis.label.set_visible(False)
 
             # TODO should titles be set for each position along the pair dimension?
             # (e.g., pair on y, facet on cols, should facet titles only go on top row?)
@@ -513,7 +531,7 @@ class Plot:
                     level = figure_dimensions[dim][idx]
                     title_parts.append(f"{name} = {level}")
             title = " | ".join(title_parts)
-            axes.set_title(title)
+            ax.set_title(title)
 
     def _setup_mappings(self) -> None:
 
@@ -597,7 +615,7 @@ class Plot:
         # TODO should handle pair logic here too, possibly assignment of x{n} -> x, etc
         keep = pd.Series(True, df.index)
         for dim, axis in zip(["col", "row"], ["x", "y"]):
-            if axis in self._pairspec:
+            if axis in self._pairspec:  # TODO we should only access `subplot` here
                 idx = self._pairspec[axis].index(subplot[dim])
                 df[axis] = df[f"{axis}{idx}"]
             if dim in df:
@@ -622,11 +640,11 @@ class Plot:
             axes_df = self._get_data_for_axes(df, subplot)[coord_cols]
             with pd.option_context("mode.use_inf_as_null", True):
                 axes_df = axes_df.dropna()
-            self._scale_coords_single(axes_df, out_df, subplot["axes"])
+            self._scale_coords_single(axes_df, out_df, subplot["ax"])
         return out_df
 
     def _scale_coords_single(
-        self, coord_df: DataFrame, out_df: DataFrame, axes: Axes
+        self, coord_df: DataFrame, out_df: DataFrame, ax: Axes
     ) -> None:
 
         # TODO modify out_df in place or return and handle externally?
@@ -637,7 +655,7 @@ class Plot:
             # It is clever, but a bit confusing!
 
             axis = var[0]
-            axis_obj = getattr(axes, f"{axis}axis")
+            axis_obj = getattr(ax, f"{axis}axis")
             scale = self._scales[axis]
 
             if scale.order is not None:
@@ -695,7 +713,7 @@ class Plot:
                         subplot_keys[dim] = subplot[dim]
 
                 if not grouping_vars or not any(grouping_keys):
-                    yield subplot_keys, axes_df.copy(), subplot["axes"]
+                    yield subplot_keys, axes_df.copy(), subplot["ax"]
                     continue
 
                 grouped_df = axes_df.groupby(grouping_vars, sort=False, as_index=False)
@@ -721,7 +739,7 @@ class Plot:
                     sub_vars = dict(zip(grouping_vars, key))
                     sub_vars.update(subplot_keys)
 
-                    yield sub_vars, df_subset.copy(), subplot["axes"]
+                    yield sub_vars, df_subset.copy(), subplot["ax"]
 
         return generate_splits
 
