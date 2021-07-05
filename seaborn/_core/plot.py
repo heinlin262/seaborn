@@ -146,13 +146,13 @@ class Plot:
         # - How to resolve sharex/sharey between facet() and pair()?
         #   - I think we should not have these params in either, and instead have a
         #     single method for figure setup (Plot.configure?) that exposes them.
-
-        # Do we only want to allow variable keys in the x/y list? Can we have lists of
-        # vectors, or is that too complicated? We will have to choose either:
-        # (a) single string assignments or (b) allow lists of vectors.
+        # - Do we want to allow lists of vectors to define the pairing? Everywhere
+        #   else we have a variable specification, we accept Hashable | Vector
 
         # TODO handle default with x=None, y=None
         # TODO raise if pair called without source data? or add data= arg here?
+        # Ideally this SHOULD work without special handling now. But it does not
+        # because things downstream are not thought out clearly.
 
         pairspec = {}
         axes = {"x": x, "y": y}
@@ -478,7 +478,6 @@ class Plot:
                 else:
                     val = True
             subplot_spec[key] = val
-        print(subplot_spec)
 
         # --- Figure initialization
 
@@ -512,9 +511,9 @@ class Plot:
             for axis in "xy":
                 idx = {"x": j, "y": i}[axis]
                 if axis in self._pairspec:
-                    label = self._pairspec.get(axis)[idx]
+                    label = setup_data.names[f"{axis}{idx}"]
                 else:
-                    label = self._data.names.get(axis)
+                    label = setup_data.names.get(axis)
                 ax.set(**{
                     f"{axis}scale": self._scales[axis]._scale,
                     f"{axis}label": label,
