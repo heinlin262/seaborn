@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import io
 import itertools
 from copy import deepcopy
@@ -124,8 +125,8 @@ class Plot:
         self,
         x: list[Hashable] | Index[Hashable] | None = None,
         y: list[Hashable] | Index[Hashable] | None = None,
+        wrap: int | None = None,
         cartesian: bool = True,  # TODO bikeshed name, maybe cross?
-        # TODO wrapping if only one variable is a list or not cartesian
         # TODO figure parameterization
         # TODO other existing PairGrid things like corner?
     ) -> Plot:
@@ -145,7 +146,7 @@ class Plot:
         #   - Ideally this SHOULD work without special handling now. But it does not
         #     because things downstream are not thought out clearly.
 
-        # TODO raise if pair called without source data? or add data= arg here?
+        # TODO add data kwarg here? (it's everywhere else...)
 
         pairspec = {}
 
@@ -154,6 +155,7 @@ class Plot:
             # Default to using all columns in the input source data, aside from
             # those that were assigned to a variable in the constructor
             # TODO Do we want to allow additional filtering by variable type?
+            # (Possibly even default to using only numeric columns)
 
             if self._data._source_data is None:
                 err = "You must pass `data` in the constructor to use default pairing."
@@ -167,6 +169,7 @@ class Plot:
                 if axis not in self._data:
                     pairspec[axis] = all_unused_columns
         else:
+
             axes = {"x": x, "y": y}
             for axis, arg in axes.items():
                 if arg is not None:
@@ -178,7 +181,14 @@ class Plot:
         pairspec["variables"] = {}
         for axis in "xy":
             for i, col in enumerate(pairspec.get(axis, [])):
-                pairspec["variables"][f"{axis}{i}"] = col
+                key = f"{axis}{i}"
+                pairspec["variables"][key] = col
+
+                # TODO how much type inference to do here?
+                # (i.e., should we force .scale_categorical, etc.?)
+                # We could also accept a scales keyword? Or document that calling, e.g.
+                # p.scale_categorical("x4") is the right approach
+                self._scales[key] = ScaleWrapper(mpl.scale.LinearScale(key), "unknown")
 
         pairspec["cartesian"] = cartesian
 
@@ -201,8 +211,6 @@ class Plot:
             variables["col"] = col
         if row is not None:
             variables["row"] = row
-
-        # TODO raise here if col/row not defined here or in self._data?
 
         # TODO Alternately use the following parameterization for order
         # `order: list[Hashable] | dict[Literal['col', 'row'], list[Hashable]]
@@ -416,7 +424,6 @@ class Plot:
 
         # --- Parsing the faceting/pairing parameterization to specify figure grid
 
-        # TODO add external API for parameterizing figure, (size , autolayout, etc.)
         # TODO use context manager with theme that has been set
         # TODO (maybe wrap THIS function with context manager; would be cleaner)
 
@@ -443,7 +450,7 @@ class Plot:
                 err = f"Cannot wrap the {wrap_dim} while pairing on {pair_axis}."
             else:
                 continue
-            raise RuntimeError(err)  # TODO what err class? Define FigureSpecError?
+            raise RuntimeError(err)  # TODO what err class? Define PlotSpecError?
 
         # --- Subplot grid parameterization
 
@@ -460,7 +467,6 @@ class Plot:
                     setup_data.frame[dim], self._facetspec.get(f"{dim}_order"),
                 )
             elif axis in self._pairspec:
-                # TODO pass original column names? Or internal variable names?
                 figure_dimensions[dim] = self._pairspec[axis]
             else:
                 figure_dimensions[dim] = [None]
@@ -468,24 +474,22 @@ class Plot:
             subplot_spec[f"n{dim}s"] = len(figure_dimensions[dim])
 
         if not self._pairspec.get("cartesian", True):
-            # TODO Won't work with wrapping, and overall very confusing.
+            # TODO needs to handle wrapping properly
+            # Also: we need to re-enable axis/tick labels even when sharing
             subplot_spec["nrows"] = 1
-            for axis in "xy":
-                # TODO we always want axis labels for noncartesian plots, but does it
-                # make sense to allow shared axes? Maybe we should turn visibility of
-                # labels back on if cartesian is False, and default to unshared limits,
-                # but allow them somehow...
-                subplot_spec[f"share{axis}"] = False
 
         # Work out the defaults for sharex/sharey
         axis_to_dim = {"x": "col", "y": "row"}
         for axis in "xy":
             key = f"share{axis}"
-            if key in self._subplotspec:
+            if key in self._subplotspec:  # Should we just be updating this?
                 val = self._subplotspec[key]
             else:
                 if axis in self._pairspec:
-                    val = axis_to_dim[axis]
+                    if self._pairspec.get("cartesian", True):
+                        val = axis_to_dim[axis]
+                    else:
+                        val = False
                 else:
                     val = True
             subplot_spec[key] = val
@@ -513,24 +517,36 @@ class Plot:
 
         for (i, j), ax in iterplots:
 
-            self._subplot_list.append({
-                "ax": ax,
-                "row": figure_dimensions["row"][i],
-                "col": figure_dimensions["col"][j],
-            })
+            info = {"ax": ax}
+
+            for dim in ["row", "col"]:
+                idx = {"row": i, "col": j}[dim]
+                if dim in setup_data:
+                    info[dim] = figure_dimensions[dim][idx]
+                else:
+                    info[dim] = None
 
             for axis in "xy":
+
                 idx = {"x": j, "y": i}[axis]
                 if axis in self._pairspec:
-                    label = setup_data.names[f"{axis}{idx}"]
+                    key = f"{axis}{idx}"
                 else:
-                    label = setup_data.names.get(axis)
+                    key = axis
+                info[axis] = key
+
+                label = setup_data.names.get(key)
                 ax.set(**{
-                    f"{axis}scale": self._scales[axis]._scale,
-                    f"{axis}label": label,
+                    f"{axis}scale": self._scales[key]._scale,
+                    f"{axis}label": label,  # TODO we should do this elsewhere
                 })
 
-            # TODO need to account for wrap
+            self._subplot_list.append(info)
+
+            # Now do some individual subplot configuration
+            # TODO this could be moved to a different loop, here or in a subroutine
+
+            # TODO need to account for wrap, non-cartesian
             if subplot_spec["sharex"] in (True, "col") and subplots.shape[0] - i > 1:
                 ax.xaxis.label.set_visible(False)
             if subplot_spec["sharey"] in (True, "row") and j > 0:
@@ -581,7 +597,14 @@ class Plot:
 
         # Our statistics happen on the scale we want, but then matplotlib is going
         # to re-handle the scaling, so we need to invert before handing off
-        # Note: we don't need to convert back to strings for categories (but we could?)
+        # TODO Problem: we don't convert back to strings from numbers, because the
+        # unit mapping on the matplotlib axes is a private variable. We know the mapping
+        # we would be using, but we don't know if there are other categories on the axis
+        # in situations where we are plotting onto a pre-existing axis. Normally this is
+        # ok (matplotlib does the right thing with a numeric representation) but it will
+        # be an issue for marks (e.g. Histograms) that set default parameters based on
+        # inference about the variable type -- specifically we don't discrete=True by
+        # default for categorical variables. This sucks!
         df = self._unscale_coords(df)
 
         # TODO this might make debugging annoying ... should we create new data object?
@@ -624,18 +647,28 @@ class Plot:
         df = df.reset_index(drop=True)  # TODO not always needed, can we limit?
         return df
 
-    def _get_data_for_axes(self, df: DataFrame, subplot: dict) -> DataFrame:
+    def _get_subplot_data(
+        self,
+        df: DataFrame,
+        subplot: dict,
+        reassign_xy=False,
+    ) -> DataFrame:
 
-        # TODO should handle pair logic here too, possibly assignment of x{n} -> x, etc
-        keep = pd.Series(True, df.index)
-        for dim, axis in zip(["col", "row"], ["x", "y"]):
-            if axis in self._pairspec:  # TODO we should only access `subplot` here
-                idx = self._pairspec[axis].index(subplot[dim])
-                df[axis] = df[f"{axis}{idx}"]
-            if dim in df:
-                keep &= df[dim] == subplot[dim]
+        keep_rows = pd.Series(True, df.index, dtype=bool)
+        for dim in ["col", "row"]:
+            if dim in df is not None:
+                keep_rows &= df[dim] == subplot[dim]
 
-        return df[keep]
+        if reassign_xy:
+            reassignments = {}
+            for col in df:
+                for axis in "xy":
+                    if col.startswith(axis):
+                        new_col = re.sub(rf"^{subplot[axis]}(.*)$", rf"{axis}\1", col)
+                        reassignments[new_col] = df[col]
+            df = df.assign(**reassignments)
+
+        return df[keep_rows]
 
     def _scale_coords(self, df: DataFrame) -> DataFrame:
 
@@ -643,6 +676,7 @@ class Plot:
         # we may want to explore a way of doing this that doesn't allocate a new df
         # TODO note that this will beed to be variable-specific for pairing
         coord_cols = df.filter(regex="(^x)|(^y)").columns
+
         out_df = (
             df
             .drop(coord_cols, axis=1)
@@ -651,7 +685,15 @@ class Plot:
         )
 
         for subplot in self._subplot_list:
-            axes_df = self._get_data_for_axes(df, subplot)[coord_cols]
+            # TODO FIXME this seems to work but it's so messy
+            # Also we don't do this the second time we call the function?
+            # Also since we're passing in subplot, can we just do it in the function?
+            scale_cols = [
+                c for c in df
+                if c.startswith(subplot["x"]) or c.startswith(subplot["y"])
+            ]
+            axes_df = self._get_subplot_data(df, subplot)[scale_cols]
+
             with pd.option_context("mode.use_inf_as_null", True):
                 axes_df = axes_df.dropna()
             self._scale_coords_single(axes_df, out_df, subplot["ax"])
@@ -663,25 +705,25 @@ class Plot:
 
         # TODO modify out_df in place or return and handle externally?
 
-        for var, data in coord_df.items():
+        for var, values in coord_df.items():
 
             # TODO Explain the logic of this method thoroughly
             # It is clever, but a bit confusing!
 
             axis = var[0]
+            scale = self._scales.get(var, self._scales.get(axis))
             axis_obj = getattr(ax, f"{axis}axis")
-            scale = self._scales[axis]
 
             if scale.order is not None:
-                data = data[data.isin(scale.order)]
+                values = values[values.isin(scale.order)]
 
             # TODO wrap this in a try/except and reraise with more information
             # about what variable caused the problem (and input / desired types)
-            data = scale.cast(data)
-            axis_obj.update_units(categorical_order(data))
+            values = scale.cast(values)
+            axis_obj.update_units(categorical_order(values))
 
-            scaled = self._scales[axis].forward(axis_obj.convert_units(data))
-            out_df.loc[data.index, var] = scaled
+            scaled = self._scales[axis].forward(axis_obj.convert_units(values))
+            out_df.loc[values.index, var] = scaled
 
     def _unscale_coords(self, df: DataFrame) -> DataFrame:
 
@@ -719,7 +761,7 @@ class Plot:
 
             for subplot in self._subplot_list:
 
-                axes_df = self._get_data_for_axes(data.frame, subplot)
+                axes_df = self._get_subplot_data(data.frame, subplot, reassign_xy=True)
 
                 subplot_keys = {}
                 for dim in ["col", "row"]:

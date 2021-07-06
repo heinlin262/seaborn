@@ -861,6 +861,11 @@ class TestPairInterface:
             assert ax.get_gridspec().nrows == 1
             assert ax.get_gridspec().ncols == len(x) == len(y)
 
+        root, *other = p._figure.axes
+        for axis in "xy":
+            shareset = getattr(root, f"get_shared_{axis}_axes")()
+            assert not any(shareset.joined(root, ax) for ax in other)
+
     def test_with_no_variables(self, long_df):
 
         all_cols = long_df.columns
