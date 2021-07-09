@@ -508,9 +508,9 @@ class TestPlotting:
         m = MockMark()
         Plot(long_df).pair(x, y).add(m).plot()
 
-        var_product = itertools.product(y, x)
+        var_product = itertools.product(x, y)
 
-        for data, (y_i, x_i) in zip(m.passed_data, var_product):
+        for data, (x_i, y_i) in zip(m.passed_data, var_product):
             assert_vector_equal(data["x"], long_df[x_i].astype(float))
             assert_vector_equal(data["y"], long_df[y_i].astype(float))
 
@@ -536,9 +536,9 @@ class TestPlotting:
         Plot(long_df, group=group).pair(x, y).add(m).plot()
 
         groups = categorical_order(long_df[group])
-        var_product = itertools.product(y, x, groups)
+        var_product = itertools.product(x, y, groups)
 
-        for data, (y_i, x_i, g_i) in zip(m.passed_data, var_product):
+        for data, (x_i, y_i, g_i) in zip(m.passed_data, var_product):
             rows = long_df[group] == g_i
             assert_vector_equal(data["x"], long_df.loc[rows, x_i])
             assert_vector_equal(data["y"], long_df.loc[rows, y_i])
@@ -553,9 +553,9 @@ class TestPlotting:
         Plot(long_df, y=y, row=row).pair(x).add(m).plot()
 
         facets = categorical_order(long_df[row])
-        var_product = itertools.product(facets, x)
+        var_product = itertools.product(x, facets)
 
-        for data, (f_i, x_i) in zip(m.passed_data, var_product):
+        for data, (x_i, f_i) in zip(m.passed_data, var_product):
             rows = long_df[row] == f_i
             assert_vector_equal(data["x"], long_df.loc[rows, x_i])
             assert_vector_equal(data["y"], long_df.loc[rows, y])

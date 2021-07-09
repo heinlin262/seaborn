@@ -148,6 +148,11 @@ class Plot:
 
         # TODO add data kwarg here? (it's everywhere else...)
 
+        # TODO is is weird to call .pair() to create univariate plots?
+        # i.e. Plot(data).pair(x=[...]). The basic logic is fine.
+        # But maybe a different verb (e.g. Plot.spread) would be more clear?
+        # Then Plot(data).pair(x=[...]) would show the given x vars vs all.
+
         pairspec = {}
 
         if x is None and y is None:
@@ -579,6 +584,42 @@ class Plot:
                 scale = self._scales.get(var)
                 mapping.setup(all_data, scale)
 
+    def _generate_pairings(self, df):  # TODO type -> dict, dataframe?
+
+        xs = [f"x{i}" for i, _ in enumerate(self._pairspec.get("x", []))]
+        ys = [f"y{i}" for i, _ in enumerate(self._pairspec.get("y", []))]
+
+        if not (xs or ys):
+            yield self._subplot_list, df
+            return
+
+        if not xs:
+            xs = [None]
+        if not ys:
+            ys = [None]
+
+        for x, y in itertools.product(xs, ys):
+
+            reassignments = {}
+            if x is not None:
+                reassignments.update({
+                    # Complex regex business to support e.g. x0max
+                    re.sub(rf"^{x}(.*)$", r"x\1", col): df[col]
+                    for col in df if col.startswith(x)
+                })
+            if y is not None:
+                reassignments.update({
+                    re.sub(rf"^{y}(.*)$", r"y\1", col): df[col]
+                    for col in df if col.startswith(y)
+                })
+
+            subplots = [
+                s for s in self._subplot_list
+                if (x is None or s["x"] == x) and (y is None or s["y"] == y)
+            ]
+
+            yield subplots, df.assign(**reassignments)
+
     def _plot_layer(self, layer: Layer, mappings: dict[str, SemanticMapping]) -> None:
 
         default_grouping_vars = ["col", "row", "group"]  # TODO where best to define?
@@ -587,39 +628,37 @@ class Plot:
         mark = layer.mark
         stat = layer.stat
 
-        df = self._scale_coords(data.frame)
+        full_df = data.frame
+        for subplots, df in self._generate_pairings(full_df):
 
-        if stat is not None:
-            grouping_vars = stat.grouping_vars + default_grouping_vars
-            df = self._apply_stat(df, grouping_vars, stat)
+            df = self._scale_coords(subplots, df)
 
-        df = mark._adjust(df)
+            if stat is not None:
+                grouping_vars = stat.grouping_vars + default_grouping_vars
+                df = self._apply_stat(df, grouping_vars, stat)
 
-        # Our statistics happen on the scale we want, but then matplotlib is going
-        # to re-handle the scaling, so we need to invert before handing off
-        # TODO Problem: we don't convert back to strings from numbers, because the
-        # unit mapping on the matplotlib axes is a private variable. We know the mapping
-        # we would be using, but we don't know if there are other categories on the axis
-        # in situations where we are plotting onto a pre-existing axis. Normally this is
-        # ok (matplotlib does the right thing with a numeric representation) but it will
-        # be an issue for marks (e.g. Histograms) that set default parameters based on
-        # inference about the variable type -- specifically we don't discrete=True by
-        # default for categorical variables. This sucks!
-        df = self._unscale_coords(df)
+            df = mark._adjust(df)
 
-        # TODO this might make debugging annoying ... should we create new data object?
-        data.frame = df
+            # Our statistics happen on the scale we want, but then matplotlib is going
+            # to re-handle the scaling, so we need to invert before handing off
+            df = self._unscale_coords(df)
 
-        grouping_vars = mark.grouping_vars + default_grouping_vars
-        generate_splits = self._setup_split_generator(grouping_vars, data, mappings)
+            # TODO might make debugging annoying ... should we create new data object?
+            # (Or can we just pass the frame?)
+            data.frame = df
 
-        layer.mark._plot(generate_splits, mappings)
+            grouping_vars = mark.grouping_vars + default_grouping_vars
+            generate_splits = self._setup_split_generator(
+                grouping_vars, data, mappings, subplots
+            )
+
+            layer.mark._plot(generate_splits, mappings)
 
     def _apply_stat(
         self, df: DataFrame, grouping_vars: list[str], stat: Stat
     ) -> DataFrame:
 
-        stat.setup(df)
+        stat.setup(df)  # TODO pass scales here?
 
         # TODO how can we special-case fast aggregations? (i.e. mean, std, etc.)
         # IDEA: have Stat identify as an aggregator? (Through Mixin or attribute)
@@ -651,7 +690,6 @@ class Plot:
         self,
         df: DataFrame,
         subplot: dict,
-        reassign_xy=False,
     ) -> DataFrame:
 
         keep_rows = pd.Series(True, df.index, dtype=bool)
@@ -659,44 +697,33 @@ class Plot:
             if dim in df is not None:
                 keep_rows &= df[dim] == subplot[dim]
 
-        if reassign_xy:
-            reassignments = {}
-            for col in df:
-                for axis in "xy":
-                    if col.startswith(axis):
-                        new_col = re.sub(rf"^{subplot[axis]}(.*)$", rf"{axis}\1", col)
-                        reassignments[new_col] = df[col]
-            df = df.assign(**reassignments)
-
         return df[keep_rows]
 
-    def _scale_coords(self, df: DataFrame) -> DataFrame:
+    def _scale_coords(self, subplots, df: DataFrame) -> DataFrame:  # TODO types
 
         # TODO the regex in filter is handy but we don't actually use the DataFrame
         # we may want to explore a way of doing this that doesn't allocate a new df
         # TODO note that this will beed to be variable-specific for pairing
-        coord_cols = df.filter(regex="(^x)|(^y)").columns
+        coord_cols = [c for c in df if re.match(r"^[xy]\D*$", c)]
+        drop_cols = [c for c in df if re.match(r"^[xy]\d", c)]
 
         out_df = (
             df
-            .drop(coord_cols, axis=1)
             .copy(deep=False)
+            .drop(coord_cols + drop_cols, axis=1)
             .reindex(df.columns, axis=1)  # So unscaled columns retain their place
         )
 
-        for subplot in self._subplot_list:
+        for subplot in subplots:
             # TODO FIXME this seems to work but it's so messy
             # Also we don't do this the second time we call the function?
             # Also since we're passing in subplot, can we just do it in the function?
-            scale_cols = [
-                c for c in df
-                if c.startswith(subplot["x"]) or c.startswith(subplot["y"])
-            ]
-            axes_df = self._get_subplot_data(df, subplot)[scale_cols]
+            axes_df = self._get_subplot_data(df, subplot)[coord_cols]
 
             with pd.option_context("mode.use_inf_as_null", True):
                 axes_df = axes_df.dropna()
             self._scale_coords_single(axes_df, out_df, subplot["ax"])
+
         return out_df
 
     def _scale_coords_single(
@@ -704,7 +731,6 @@ class Plot:
     ) -> None:
 
         # TODO modify out_df in place or return and handle externally?
-
         for var, values in coord_df.items():
 
             # TODO Explain the logic of this method thoroughly
@@ -747,6 +773,7 @@ class Plot:
         grouping_vars: list[str],
         data: PlotData,
         mappings: dict[str, SemanticMapping],
+        subplots,  # TODO type
     ) -> Callable[[], Generator]:
 
         allow_empty = False  # TODO will need to recreate previous categorical plots
@@ -759,9 +786,9 @@ class Plot:
 
         def generate_splits() -> Generator:
 
-            for subplot in self._subplot_list:
+            for subplot in subplots:
 
-                axes_df = self._get_subplot_data(data.frame, subplot, reassign_xy=True)
+                axes_df = self._get_subplot_data(data.frame, subplot)
 
                 subplot_keys = {}
                 for dim in ["col", "row"]:
