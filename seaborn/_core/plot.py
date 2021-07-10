@@ -153,7 +153,7 @@ class Plot:
         # But maybe a different verb (e.g. Plot.spread) would be more clear?
         # Then Plot(data).pair(x=[...]) would show the given x vars vs all.
 
-        pairspec = {}
+        pairspec: dict[str, Any] = {}
 
         if x is None and y is None:
 
@@ -167,7 +167,7 @@ class Plot:
                 raise RuntimeError(err)
 
             all_unused_columns = [
-                key for key in self._data._source_data.columns
+                key for key in self._data._source_data
                 if key not in self._data.names.values()
             ]
             for axis in "xy":
@@ -434,7 +434,8 @@ class Plot:
 
         # Get the full set of assigned variables, whether from constructor or methods
         setup_data = (
-            self._data.concat(
+            self._data
+            .concat(
                 self._facetspec.get("source"),
                 self._facetspec.get("variables"),
             ).concat(
@@ -584,42 +585,6 @@ class Plot:
                 scale = self._scales.get(var)
                 mapping.setup(all_data, scale)
 
-    def _generate_pairings(self, df):  # TODO type -> dict, dataframe?
-
-        xs = [f"x{i}" for i, _ in enumerate(self._pairspec.get("x", []))]
-        ys = [f"y{i}" for i, _ in enumerate(self._pairspec.get("y", []))]
-
-        if not (xs or ys):
-            yield self._subplot_list, df
-            return
-
-        if not xs:
-            xs = [None]
-        if not ys:
-            ys = [None]
-
-        for x, y in itertools.product(xs, ys):
-
-            reassignments = {}
-            if x is not None:
-                reassignments.update({
-                    # Complex regex business to support e.g. x0max
-                    re.sub(rf"^{x}(.*)$", r"x\1", col): df[col]
-                    for col in df if col.startswith(x)
-                })
-            if y is not None:
-                reassignments.update({
-                    re.sub(rf"^{y}(.*)$", r"y\1", col): df[col]
-                    for col in df if col.startswith(y)
-                })
-
-            subplots = [
-                s for s in self._subplot_list
-                if (x is None or s["x"] == x) and (y is None or s["y"] == y)
-            ]
-
-            yield subplots, df.assign(**reassignments)
-
     def _plot_layer(self, layer: Layer, mappings: dict[str, SemanticMapping]) -> None:
 
         default_grouping_vars = ["col", "row", "group"]  # TODO where best to define?
@@ -643,13 +608,9 @@ class Plot:
             # to re-handle the scaling, so we need to invert before handing off
             df = self._unscale_coords(df)
 
-            # TODO might make debugging annoying ... should we create new data object?
-            # (Or can we just pass the frame?)
-            data.frame = df
-
             grouping_vars = mark.grouping_vars + default_grouping_vars
             generate_splits = self._setup_split_generator(
-                grouping_vars, data, mappings, subplots
+                grouping_vars, df, mappings, subplots
             )
 
             layer.mark._plot(generate_splits, mappings)
@@ -686,24 +647,9 @@ class Plot:
         df = df.reset_index(drop=True)  # TODO not always needed, can we limit?
         return df
 
-    def _get_subplot_data(
-        self,
-        df: DataFrame,
-        subplot: dict,
-    ) -> DataFrame:
+    def _scale_coords(self, subplots: list[dict], df: DataFrame) -> DataFrame:
+        # TODO retype with a SubplotSpec or similar
 
-        keep_rows = pd.Series(True, df.index, dtype=bool)
-        for dim in ["col", "row"]:
-            if dim in df is not None:
-                keep_rows &= df[dim] == subplot[dim]
-
-        return df[keep_rows]
-
-    def _scale_coords(self, subplots, df: DataFrame) -> DataFrame:  # TODO types
-
-        # TODO the regex in filter is handy but we don't actually use the DataFrame
-        # we may want to explore a way of doing this that doesn't allocate a new df
-        # TODO note that this will beed to be variable-specific for pairing
         coord_cols = [c for c in df if re.match(r"^[xy]\D*$", c)]
         drop_cols = [c for c in df if re.match(r"^[xy]\d", c)]
 
@@ -717,7 +663,6 @@ class Plot:
         for subplot in subplots:
             # TODO FIXME this seems to work but it's so messy
             # Also we don't do this the second time we call the function?
-            # Also since we're passing in subplot, can we just do it in the function?
             axes_df = self._get_subplot_data(df, subplot)[coord_cols]
 
             with pd.option_context("mode.use_inf_as_null", True):
@@ -737,6 +682,7 @@ class Plot:
             # It is clever, but a bit confusing!
 
             axis = var[0]
+            # TODO for var I think we need "([xy]\d*).*$"
             scale = self._scales.get(var, self._scales.get(axis))
             axis_obj = getattr(ax, f"{axis}axis")
 
@@ -768,10 +714,61 @@ class Plot:
 
         return out_df
 
+    def _generate_pairings(
+        self,
+        df: DataFrame
+    ) -> Generator[tuple[list[dict], DataFrame], None, None]:
+        # TODO retype return with SubplotSpec or similar
+
+        # TODO This code is ugly and difficult to follow
+        # I'm not sure that can really be helped without upstream changes, though
+
+        prefixes = {
+            axis: [
+                val if val is None else f"{axis}{i}"
+                for i, val in enumerate(self._pairspec.get(axis, [None]))
+            ]
+            for axis in "xy"
+        }
+
+        if not (any(prefixes["x"]) or any(prefixes["y"])):
+            yield self._subplot_list, df
+            return
+
+        for x, y in itertools.product(*prefixes.values()):
+
+            reassignments = {}
+            for axis, prefix in zip("xy", [x, y]):
+                if prefix is not None:
+                    reassignments.update({
+                        # Complex regex business to support e.g. x0max
+                        re.sub(rf"^{prefix}(.*)$", rf"{axis}\1", col): df[col]
+                        for col in df if col.startswith(prefix)
+                    })
+
+            subplots = [
+                s for s in self._subplot_list
+                if (x is None or s["x"] == x) and (y is None or s["y"] == y)
+            ]
+
+            yield subplots, df.assign(**reassignments)
+
+    def _get_subplot_data(  # TODO maybe _filter_subplot_data?
+        self,
+        df: DataFrame,
+        subplot: dict,
+    ) -> DataFrame:
+
+        keep_rows = pd.Series(True, df.index, dtype=bool)
+        for dim in ["col", "row"]:
+            if dim in df is not None:
+                keep_rows &= df[dim] == subplot[dim]
+        return df[keep_rows]
+
     def _setup_split_generator(
         self,
         grouping_vars: list[str],
-        data: PlotData,
+        df: DataFrame,
         mappings: dict[str, SemanticMapping],
         subplots,  # TODO type
     ) -> Callable[[], Generator]:
@@ -780,7 +777,7 @@ class Plot:
 
         levels = {v: m.levels for v, m in mappings.items()}
         grouping_vars = [
-            var for var in grouping_vars if var in data and var not in ["col", "row"]
+            var for var in grouping_vars if var in df and var not in ["col", "row"]
         ]
         grouping_keys = [levels.get(var, []) for var in grouping_vars]
 
@@ -788,7 +785,7 @@ class Plot:
 
             for subplot in subplots:
 
-                axes_df = self._get_subplot_data(data.frame, subplot)
+                axes_df = self._get_subplot_data(df, subplot)
 
                 subplot_keys = {}
                 for dim in ["col", "row"]:
