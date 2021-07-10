@@ -202,6 +202,7 @@ class Plot:
                 pairspec["structure"][axis] = keys
 
         pairspec["cartesian"] = cartesian
+        pairspec["wrap"] = wrap
 
         self._pairspec.update(pairspec)
         return self
@@ -489,9 +490,19 @@ class Plot:
             subplot_spec[f"n{dim}s"] = len(figure_dimensions[dim])
 
         if not self._pairspec.get("cartesian", True):
-            # TODO needs to handle wrapping properly
-            # Also: we need to re-enable axis/tick labels even when sharing
+            # TODO we need to re-enable axis/tick labels even when sharing
             subplot_spec["nrows"] = 1
+
+        wrap = self._facetspec.get("wrap", self._pairspec.get("wrap"))
+        if wrap is not None:
+            wrap_dim = "row" if subplot_spec["nrows"] > 1 else "col"
+            flow_dim = {"row": "col", "col": "row"}[wrap_dim]
+            n_subplots = subplot_spec[f"n{wrap_dim}s"]
+            flow = int(np.ceil(n_subplots / wrap))
+            subplot_spec[f"n{wrap_dim}s"] = wrap
+            subplot_spec[f"n{flow_dim}s"] = flow
+        else:
+            n_subplots = subplot_spec["ncols"] * subplot_spec["nrows"]
 
         # Work out the defaults for sharex/sharey
         axis_to_dim = {"x": "col", "y": "row"}
@@ -501,7 +512,7 @@ class Plot:
                 val = self._subplotspec[key]
             else:
                 if axis in self._pairspec:
-                    if self._pairspec.get("cartesian", True):
+                    if wrap in [None, 1] and self._pairspec.get("cartesian", True):
                         val = axis_to_dim[axis]
                     else:
                         val = False
@@ -524,10 +535,20 @@ class Plot:
 
         self._subplot_list = []
 
+        if wrap is not None:
+            ravel_order = {"col": "C", "row": "F"}[wrap_dim]
+            subplots_flat = np.ravel(subplots, order=ravel_order)
+            subplots, extra = np.split(subplots_flat, [n_subplots])
+            for ax in extra:
+                ax.remove()
+            if wrap_dim == "col":
+                subplots = subplots[np.newaxis, :]
+            else:
+                subplots = subplots[:, np.newaxis]
         if not self._pairspec or self._pairspec["cartesian"]:
             iterplots = np.ndenumerate(subplots)
         else:
-            indices = np.arange(subplot_spec["ncols"])
+            indices = np.arange(n_subplots)
             iterplots = zip(zip(indices, indices), subplots.flat)
 
         for (i, j), ax in iterplots:
