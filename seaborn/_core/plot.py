@@ -184,9 +184,13 @@ class Plot:
                     pairspec[axis] = list(arg)
 
         pairspec["variables"] = {}
+        pairspec["structure"] = {}
         for axis in "xy":
+            keys = []
             for i, col in enumerate(pairspec.get(axis, [])):
+
                 key = f"{axis}{i}"
+                keys.append(key)
                 pairspec["variables"][key] = col
 
                 # TODO how much type inference to do here?
@@ -194,6 +198,8 @@ class Plot:
                 # We could also accept a scales keyword? Or document that calling, e.g.
                 # p.scale_categorical("x4") is the right approach
                 self._scales[key] = ScaleWrapper(mpl.scale.LinearScale(key), "unknown")
+            if keys:
+                pairspec["structure"][axis] = keys
 
         pairspec["cartesian"] = cartesian
 
@@ -315,7 +321,7 @@ class Plot:
         # which is pretty annoying in standard matplotlib.
         # Should datetime data ever have anything other than a linear scale?
         # The only thing I can really think of are geologic/astro plots that
-        # use a reverse log scale.
+        # use a reverse log scale, (but those are usually in units of years).
 
         return self
 
@@ -328,9 +334,15 @@ class Plot:
 
     def configure(
         self,
+        figsize: tuple[float, float] | None = None,
         sharex: bool | Literal["row", "col"] | None = None,
         sharey: bool | Literal["row", "col"] | None = None,
     ) -> Plot:
+
+        # TODO add an "auto" mode for figsize that roughly scales with the rcParams
+        # figsize (so that works), but expands to prevent subplots from being squished
+        # Also should we have height=, aspect=, exclusive with figsize? Or working
+        # with figsize when only one is defined?
 
         subplot_keys = ["sharex", "sharey"]
         for key in subplot_keys:
@@ -349,9 +361,6 @@ class Plot:
         return self
 
     def plot(self, pyplot=False) -> Plot:
-
-        # TODO clone self here, so plot() doesn't modify the original objects?
-        # (Do the clone here, or do it in show/_repr_png_?)
 
         self._setup_layers()
         self._setup_scales()
@@ -720,22 +729,17 @@ class Plot:
     ) -> Generator[tuple[list[dict], DataFrame], None, None]:
         # TODO retype return with SubplotSpec or similar
 
-        # TODO This code is ugly and difficult to follow
-        # I'm not sure that can really be helped without upstream changes, though
+        pair_variables = self._pairspec.get("structure", {})
 
-        prefixes = {
-            axis: [
-                val if val is None else f"{axis}{i}"
-                for i, val in enumerate(self._pairspec.get(axis, [None]))
-            ]
-            for axis in "xy"
-        }
-
-        if not (any(prefixes["x"]) or any(prefixes["y"])):
+        if not pair_variables:
             yield self._subplot_list, df
             return
 
-        for x, y in itertools.product(*prefixes.values()):
+        iter_axes = itertools.product(*[
+            pair_variables.get(axis, [None]) for axis in "xy"
+        ])
+
+        for x, y in iter_axes:
 
             reassignments = {}
             for axis, prefix in zip("xy", [x, y]):
@@ -746,10 +750,10 @@ class Plot:
                         for col in df if col.startswith(prefix)
                     })
 
-            subplots = [
-                s for s in self._subplot_list
-                if (x is None or s["x"] == x) and (y is None or s["y"] == y)
-            ]
+            subplots = []
+            for s in self._subplot_list:
+                if (x is None or s["x"] == x) and (y is None or s["y"] == y):
+                    subplots.append(s)
 
             yield subplots, df.assign(**reassignments)
 
