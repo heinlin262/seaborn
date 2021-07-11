@@ -822,7 +822,7 @@ class TestFacetInterface:
 
         rows = list("abcd")
         wrap = 3
-        p = Plot().facet(rows=rows, wrap=wrap).plot()
+        p = Plot().facet(row=rows, wrap=wrap).plot()
 
         gridspec = p._figure.axes[0].get_gridspec()
         assert len(p._figure.axes) == 4
