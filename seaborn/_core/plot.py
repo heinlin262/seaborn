@@ -470,6 +470,11 @@ class Plot:
 
         # --- Subplot grid parameterization
 
+        # TODO this method is getting quite long and complicated.
+        # I'd like to break it up, although adding a bunch more methods
+        # on Plot will make it hard to navigate. Should there be some sort of
+        # container class for the figure/subplots where that logic lives?
+
         # TODO Ignoring col/row wrapping, but we need to deal with that
 
         # TODO build this from self._subplotspec?

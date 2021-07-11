@@ -805,6 +805,32 @@ class TestFacetInterface:
                 assert all(shareset[shared].joined(root, ax) for ax in other)
                 assert not any(shareset[unshared].joined(root, ax) for ax in other)
 
+    def test_col_wrapping(self):
+
+        cols = list("abcd")
+        wrap = 3
+        p = Plot().facet(col=cols, wrap=wrap).plot()
+
+        gridspec = p._figure.axes[0].get_gridspec()
+        assert len(p._figure.axes) == 4
+        assert gridspec.ncols == 3
+        assert gridspec.nrows == 2
+
+        # TODO test axis labels and titles
+
+    def test_row_wrapping(self):
+
+        rows = list("abcd")
+        wrap = 3
+        p = Plot().facet(rows=rows, wrap=wrap).plot()
+
+        gridspec = p._figure.axes[0].get_gridspec()
+        assert len(p._figure.axes) == 4
+        assert gridspec.ncols == 2
+        assert gridspec.nrows == 3
+
+        # TODO test axis labels and titles
+
 
 class TestPairInterface:
 
@@ -973,6 +999,50 @@ class TestPairInterface:
             assert all(x_shareset.joined(root, ax) for ax in other)
             y_shareset = getattr(root, "get_shared_y_axes")()
             assert all(y_shareset.joined(root, ax) for ax in other)
+
+    def test_x_wrapping(self, long_df):
+
+        x_vars = ["f", "x", "y", "z"]
+        p = Plot(long_df, y="y").pair(x=x_vars, wrap=3).plot()
+
+        gridspec = p._figure.axes[0].get_gridspec()
+        assert len(p._figure.axes) == 4
+        assert gridspec.ncols == 3
+        assert gridspec.nrows == 2
+
+        # TODO test axis labels and visibility
+
+    def test_y_wrapping(self, long_df):
+
+        y_vars = ["f", "x", "y", "z"]
+        p = Plot(long_df, x="x").pair(y=y_vars, wrap=3).plot()
+
+        gridspec = p._figure.axes[0].get_gridspec()
+        assert len(p._figure.axes) == 4
+        assert gridspec.nrows == 3
+        assert gridspec.ncols == 2
+
+        # TODO test axis labels and visibility
+
+    def test_noncartesian_wrapping(self, long_df):
+
+        x_vars = ["a", "b", "c", "t"]
+        y_vars = ["f", "x", "y", "z"]
+
+        p = (
+            Plot(long_df, x="x")
+            .pair(x=x_vars, y=y_vars, wrap=3, cartesian=False)
+            .plot()
+        )
+
+        gridspec = p._figure.axes[0].get_gridspec()
+        assert len(p._figure.axes) == 4
+        assert gridspec.nrows == 2
+        assert gridspec.ncols == 3
+
+        # TODO test axis labels and visibility
+
+    # TODO test validation of wrap kwarg vs 2D pairing and faceting
 
 
 # TODO Current untested includes:
