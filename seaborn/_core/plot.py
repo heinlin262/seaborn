@@ -460,6 +460,8 @@ class Plot:
                 err = f"Cannot facet on the {facet_dim} while pairing on {pair_axis}."
             elif wrap_dim[:3] in setup_data and self._facetspec.get("wrap"):
                 err = f"Cannot wrap the {wrap_dim} while pairing on {pair_axis}."
+            elif wrap_dim[:3] in setup_data and self._pairspec.get("wrap"):
+                err = f"Cannot wrap the {facet_dim} while faceting on {wrap_dim}."
             else:
                 continue
             raise RuntimeError(err)  # TODO what err class? Define PlotSpecError?
